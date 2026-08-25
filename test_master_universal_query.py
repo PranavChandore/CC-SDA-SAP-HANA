@@ -1,28 +1,20 @@
-# 📖 Master Universal Adaptive SAP CC & HANA SDA Query Documentation
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-> **System Target**: SAP Convergent Charging 2023 / SAP HANA DEV Database (`10.4.4.125:30041`)  
-> **Schema**: `SAPHANADB`  
-> **Repository**: `CC-SDA-SAP-HANA`  
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Summary
+print("================================================================================")
+print(" TESTING MASTER UNIVERSAL ADAPTIVE SQL QUERY FOR ALL SCENARIOS")
+print("================================================================================")
 
-This document provides the **Master Universal Adaptive SAP HANA SQL Query** that handles **all customer, contract, counter, and allowance scenarios** without requiring any query code changes.
-
-Whether you search for:
-- A **Subscriber ID** (`WHERE sa.SUBSCRIBER = '...'` or `IN (...)`)
-- A **Shared Root Contract ID** (e.g. `00000000000000061718`)
-- A **Sub-Line / Linked Contract ID** (e.g. `00000000000000061742`)
-- Or **Multiple Contracts** (`WHERE caco.EXT_ID IN (...)`)
-
-This single query dynamically links parent-child contract hierarchies (`ROCO_OID`), shared data quota counters (`COUN_KEY = 4`), binary allowance data (`ALLO_DATA`), plan fees, and grace period calculations (`GRACE_FREE_PERIOD_DAYS`) in **one unified output table**.
-
----
-
-## ⚡ Master Universal Adaptive HANA SQL Query
-
-```sql
+master_sql_base = """
 SELECT DISTINCT
     sa.SUBSCRIBER                         AS "SUBSCRIBER_ID",
     caco.EXT_ID                           AS "CONTRACT_ID",
@@ -89,27 +81,39 @@ LEFT JOIN (
     GROUP BY CON_ID
 ) evt 
     ON LTRIM(caco.EXT_ID, '0') = LTRIM(evt.CON_ID, '0')
-
--- =========================================================================
--- FILTER OPTION A: Search by Sub-line or Root Contract ID(s)
--- =========================================================================
-WHERE caco.EXT_ID = '00000000000000061742'
--- OR: WHERE caco.EXT_ID IN ('00000000000000061742', '00000000000000061734', '00000000000000061718')
-
--- =========================================================================
--- FILTER OPTION B: Search by Customer / Subscriber ID(s)
--- =========================================================================
--- WHERE sa.SUBSCRIBER = '0000073467'
--- OR: WHERE sa.SUBSCRIBER IN ('0011111151', '0000073467', '0000634156')
-
+{WHERE_CLAUSE}
 ORDER BY sa.SUBSCRIBER, caco.EXT_ID, allo.OID;
-```
+"""
 
----
+def run_test(label, where_clause):
+    print(f"\n================================================================================")
+    print(f" TEST CASE: {label}")
+    print(f" WHERE CLAUSE: {where_clause}")
+    print(f"================================================================================")
+    sql = master_sql_base.format(WHERE_CLAUSE=where_clause)
+    try:
+        cur.execute(sql)
+        cols = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+        print(" | ".join(cols))
+        print("-" * 160)
+        for r in rows:
+            print(" | ".join(str(x) if x is not None else "null" for x in r))
+        print(f"Total Rows: {len(rows)}")
+    except Exception as e:
+        print(f"Error: {e}")
 
-## 📌 Architectural Key Innovations
+# 1. Search for Sub-line Contract 61742
+run_test("Sub-line Contract 00000000000000061742", "WHERE caco.EXT_ID = '00000000000000061742'")
 
-1. **Self-Join Hierarchy (`caco.ROCO_OID = root_caco.OID`)**: Automatically resolves whether the user inputs a Root Contract or a Sub-Line Contract, returning both the target contract and its parent root contract ID in the same row.
-2. **Dual-Key Allowance Linking (`allo.CACO_OID = caco.OID OR allo.CACO_OID = root_caco.OID`)**: Automatically retrieves allowances attached to individual sub-lines as well as pooled allowances attached to the shared root contract.
-3. **Dynamic `DAYS_BETWEEN` Grace Period**: Automatically calculates exact active Grace Period duration in days without requiring hardcoded values.
-4. **Data Quota Counter 4 Join (`cnt.COUN_KEY = 4`)**: Embeds high-speed data usage balances directly into the allowance report.
+# 2. Search for Shared Root Contract 61718
+run_test("Root Shared Contract 00000000000000061718", "WHERE caco.EXT_ID = '00000000000000061718'")
+
+# 3. Search for Subscriber ID 0000073467
+run_test("Subscriber ID 0000073467", "WHERE sa.SUBSCRIBER = '0000073467'")
+
+# 4. Search for Multiple Contracts IN (...)
+run_test("Multiple Contracts IN ('00000000000000061742', '00000000000000061734', '00000000000000061718')", 
+         "WHERE caco.EXT_ID IN ('00000000000000061742', '00000000000000061734', '00000000000000061718')")
+
+con.close()
