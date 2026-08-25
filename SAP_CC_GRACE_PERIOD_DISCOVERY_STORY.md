@@ -8,7 +8,7 @@
 
 ## 📑 Executive Summary
 
-This document captures the complete technical investigation, discovery, and verification process of retrieving **Grace Free Period (`GRACE_FREE_PERIOD`)**, **Allowance Amounts (`360`)**, **Product/Sub-Product Classifications**, and allowance parameters from SAP Convergent Charging (SAP CC) via Smart Data Access (SDA) on SAP HANA using pure SQL queries and Python tools.
+This document captures the complete technical investigation, discovery, and verification process of retrieving **Grace Free Period (`GRACE_FREE_PERIOD`)**, **Allowance Amounts (`360` / `60000`)**, **Product/Sub-Product Classifications**, and allowance parameters from SAP Convergent Charging (SAP CC) via Smart Data Access (SDA) on SAP HANA using pure SQL queries and Python tools.
 
 ---
 
@@ -16,7 +16,7 @@ This document captures the complete technical investigation, discovery, and veri
 
 In SAP CC architecture, provider contracts manage customer subscriptions, counters, balances, and allowances. A critical requirement was to determine:
 1. Whether all **6 core SAP CC virtual tables** are accessible without privilege/SDA permission errors.
-2. Where and how the **Grace Free Period (`GRACE_FREE_PERIOD = 77`)** and **Allowance Amount (`360`)** are stored in the underlying database for provider contracts such as `00000000000000061742`.
+2. Where and how the **Grace Free Period (`GRACE_FREE_PERIOD = 77`)** and **Allowance Amount (`360` / `60000`)** are stored in the underlying database for provider contracts such as `00000000000000061742`.
 
 ---
 
@@ -53,9 +53,9 @@ By querying `SAPHANADB.CC_DEV_CACO`, contract `00000000000000061742` was resolve
 
 ---
 
-## 🛠️ Chapter 4: Pure End-to-End HANA SQL Query
+## 🛠️ Chapter 4: Pure End-to-End HANA SQL Query (With NULLIF Plan Name Fix)
 
-To fetch Subscriber ID, Contract ID, Allowance OID, Start Date, End Date, Plan Name, Amount, and Contract Status in a **single pure SQL query without requiring Python code**:
+To fetch Subscriber ID, Contract ID, Allowance OID, Start Date, End Date, Plan Name, Amount, and Contract Status in a **single pure SQL query with non-empty Plan Name**:
 
 ```sql
 SELECT 
@@ -65,7 +65,11 @@ SELECT
     allo.OID                              AS "ALLOWANCE_OID",
     allo.START_DATE                       AS "VALIDITY_START_DATE",
     allo.END_DATE                         AS "VALIDITY_END_DATE",
-    COALESCE(m.VARIANT_NAME, evt.CUST_PLAN_NAME, 'BASIC') AS "PLAN_NAME",
+    COALESCE(
+        NULLIF(m.VARIANT_NAME, ''), 
+        NULLIF(evt.CUST_PLAN_NAME, ''), 
+        'BASIC'
+    )                                     AS "PLAN_NAME",
     COALESCE(evt.PLAN_PRICE_DECIMAL, 0)   AS "AMOUNT",
     caco.OP_STATUS                        AS "CONTRACT_STATUS"
 FROM SAPHANADB.CC_DEV_SUBSCRIBER_ACCOUNT sa
@@ -79,13 +83,14 @@ LEFT JOIN SAPHANADB.ZVEL_CS_MASTER(CURRENT_DATE, CURRENT_TIME) m
 LEFT JOIN (
     SELECT 
         CON_ID, 
-        MAX(CUST_PLAN_NAME) AS CUST_PLAN_NAME,
+        MAX(NULLIF(CUST_PLAN_NAME, '')) AS CUST_PLAN_NAME,
         MAX(CAST(PLAN_PRICE AS DECIMAL(15,2))) AS PLAN_PRICE_DECIMAL
     FROM SAPHANADB.ZEL_EVENT_RAW
     WHERE EVENT_TYPE NOT LIKE '%COMMISSION%'
-      AND PLAN_PRICE IS NOT NULL 
-      AND PLAN_PRICE <> '' 
-      AND PLAN_PRICE <> 'NaN'
+      AND PLAN_PRICE IS NOT NULL AND PLAN_PRICE <> '' 
+      AND PLAN_PRICE NOT LIKE '%Infinity%'
+      AND PLAN_PRICE NOT LIKE '%NaN%'
+      AND PLAN_PRICE NOT LIKE '%BASIC%'
     GROUP BY CON_ID
 ) evt 
     ON LTRIM(caco.EXT_ID, '0') = LTRIM(evt.CON_ID, '0')
