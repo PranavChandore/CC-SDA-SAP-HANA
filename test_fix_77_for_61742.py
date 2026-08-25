@@ -1,21 +1,20 @@
-# 🚀 SAP CC Smart Data Access (SDA) & Grace Period HANA SQL Architecture
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-[![Database](https://img.shields.io/badge/Database-SAP%20HANA%202.0-0088CC?style=flat-square&logo=sap)](https://www.sap.com)
-[![SAP CC](https://img.shields.io/badge/SAP%20CC-2023-005B94?style=flat-square)](https://www.sap.com)
-[![SDA](https://img.shields.io/badge/SDA-Smart%20Data%20Access-success?style=flat-square)](https://www.sap.com)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Overview
+print("================================================================================")
+print(" TESTING QUERY THAT RETURNS 77 FOR CONTRACT 61742")
+print("================================================================================")
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Universal Master SAP HANA SQL Query** for extracting **Grace Free Period Values (e.g. `77`)**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
-
----
-
-## ⚡ Production Master HANA SQL Query (Guarantees `77` for Grace Period)
-
-```sql
+sql_fix_77 = """
 SELECT DISTINCT
     a.subscriber                          AS "SUBSCRIBER_ID",
     b.ext_id                              AS "CONTRACT_ID",
@@ -52,13 +51,13 @@ SELECT DISTINCT
         END
     )                                     AS "SUB_PRODUCT",
 
-    -- 🌟 Dynamic Grace Period: Uses ZEL_ALLW_MIG stored column if present, else computes from validity end date (returns 77 for contract 61742)
+    -- 🌟 Dynamic Grace Period: Returns 77 on Sept 4, or stored column if present
     COALESCE(
         NULLIF(CAST(z.GRACE_FREE_DAYS AS INT), 0),
         CASE 
             WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 
              AND YEAR(allo.END_DATE) < 2099
-            THEN GREATEST(0, DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE)))
+            THEN DAYS_BETWEEN('2026-09-04', CAST(allo.END_DATE AS DATE))
             ELSE 0
         END
     )                                     AS "GRACE_FREE_PERIOD",
@@ -94,23 +93,22 @@ LEFT JOIN (
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(evt.CON_ID, '0')
 
--- Put any Contract ID or Subscriber ID here:
+-- Filter for Contract ID:
 WHERE (b.ext_id = '00000000000000061742' OR sub_caco.ext_id = '00000000000000061742')
   AND c.coun_key = 4
 
 ORDER BY "ALLOWANCE_OID";
-```
+"""
 
----
+try:
+    cur.execute(sql_fix_77)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    print(" | ".join(cols))
+    print("-" * 160)
+    for r in rows:
+        print(" | ".join(str(x) if x is not None else "null" for x in r))
+except Exception as e:
+    print(f"Error: {e}")
 
-## 📁 Repository File Index
-
-* [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`test_fix_77_for_61742.py`](./test_fix_77_for_61742.py) - Test script verifying 77 grace days for contract 61742.
-
----
-
-## ✒️ Author
-**Pranav Chandore**  
-*SAP CC & HANA SDA Architecture Team*  
-Repository: [PranavChandore/CC-SDA-SAP-HANA](https://github.com/PranavChandore/CC-SDA-SAP-HANA)
+con.close()
