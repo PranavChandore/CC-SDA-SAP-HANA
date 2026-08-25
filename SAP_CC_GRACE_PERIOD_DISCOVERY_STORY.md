@@ -16,7 +16,7 @@ This document captures the complete technical investigation, discovery, and veri
 
 In SAP CC architecture, provider contracts manage customer subscriptions, counters, balances, and allowances. A critical requirement was to determine:
 1. Whether all **6 core SAP CC virtual tables** are accessible without privilege/SDA permission errors.
-2. Where and how the **Grace Free Period (`GRACE_FREE_PERIOD`)**, **Counters (`coun_key = 4`)**, and **Shared Root Contracts (`b.oid = b.roco_oid`)** are aligned in a single table for any customer or list of contracts.
+2. Where and how the **Grace Free Period (`GRACE_FREE_PERIOD`)**, **Counters (`coun_key = 4`)**, and **Shared Root Contracts (`b.oid = b.roco_oid`)** are aligned in a single table for contract `00000000000000061742` or any contract.
 
 ---
 
@@ -35,14 +35,15 @@ We executed automated diagnostic scripts across the DEV HANA instance (`10.4.4.1
 
 ---
 
-## 🛠️ Chapter 3: Aligned Single-Table HANA SQL Query (Root Contracts + Counter 4 + Allowances)
+## 🛠️ Chapter 3: Aligned Single-Table HANA SQL Query (Contract 00000000000000061742)
 
-This query aligns directly with your standard database join (`a.subscriber`, `b.ext_id`, `c.coun_key = 4`, `c.value`, `b.oid = b.roco_oid`) while dynamically pulling **Grace Free Period Days**, **Allowance Types**, **Validity Windows**, and **Amounts** into **one single table**:
+This query aligns directly with your standard database join (`a.subscriber`, `b.ext_id`, `c.coun_key = 4`, `c.value`) while dynamically pulling **Grace Free Period Days**, **Allowance Types**, **Validity Windows**, and **Amounts** into **one single table**:
 
 ```sql
 SELECT 
     a.subscriber                          AS "SUBSCRIBER",
     b.ext_id                              AS "CONTRACT_ID",
+    b.oid                                 AS "CONTRACT_OID",
     c.coun_key                            AS "COUNTER_KEY",
     c.value                               AS "COUNTER_VALUE",
     c.hold_oid                            AS "HOLD_OID",
@@ -95,9 +96,8 @@ LEFT JOIN (
     GROUP BY con_id
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.con_id, '0')
-WHERE a.subscriber = '0000073467'         -- Customer ID / List of Subscribers
+WHERE (b.ext_id = '00000000000000061742' OR sub_caco.ext_id = '00000000000000061742')
   AND c.coun_key = 4                      -- Counter Key (Data Quota / Balance)
-  AND b.oid = b.roco_oid                  -- Filters to keep ONLY the shared root contract
 ORDER BY allo.oid;
 ```
 
@@ -107,7 +107,11 @@ ORDER BY allo.oid;
 
 | Metric / Object | Details |
 | :--- | :--- |
-| **Root Contract Rule** | `b.oid = b.roco_oid` (Shared Root Contract Filter) |
-| **Counter Rule** | `c.coun_key = 4` (Data Quota / Balance) |
-| **Allowance Parsing** | Dynamic BLOB Hex Matching + `DAYS_BETWEEN` Calculation |
+| **Contract ID** | `00000000000000061742` |
+| **Subscriber ID** | `0011111151` |
+| **CACO OID** | `395304100` |
+| **Counter Key 4 Value** | `9928000` (Data Quota Balance) |
+| **Allowance OIDs** | `395104015`, `395104028`, `395104041`, `395104054`, `395104067`, `395104080`, `395104093` |
+| **Base Plan Amount** | **60000** |
+| **Grace Free Period** | **92** Days (`2026-08-20` to `2026-11-20`) |
 | **Database Tables** | `SUAC`, `CACO`, `COUNTER`, `ALLO`, `ZVEL_CS_MASTER`, `ZEL_EVENT_RAW` |
