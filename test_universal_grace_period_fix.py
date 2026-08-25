@@ -1,34 +1,20 @@
-# 🚀 SAP CC Smart Data Access (SDA) & Grace Period HANA SQL Architecture
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-[![Database](https://img.shields.io/badge/Database-SAP%20HANA%202.0-0088CC?style=flat-square&logo=sap)](https://www.sap.com)
-[![SAP CC](https://img.shields.io/badge/SAP%20CC-2023-005B94?style=flat-square)](https://www.sap.com)
-[![SDA](https://img.shields.io/badge/SDA-Smart%20Data%20Access-success?style=flat-square)](https://www.sap.com)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Overview
+print("================================================================================")
+print(" SAFE UNIVERSAL GRACE PERIOD QUERY ACROSS ALL CONTRACT TYPES")
+print("================================================================================")
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Universal Master SAP HANA SQL Query** for extracting **Grace Free Period Values**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
-
----
-
-## 🔬 Architectural Summary: Grace Period Storage & Coalesce Strategy
-
-1. **Staged/Migrated Contracts (`ZEL_ALLW_MIG`)**:
-   - The grace period integer is stored directly as a raw database column **`z.GRACE_FREE_DAYS`** (e.g. `3`, `8`, `78`).
-
-2. **Active SAP CC Allowance Counters (`CC_DEV_COUNTER`)**:
-   - Stored under **`cnt_grace.COUN_KEY = 20`** (e.g. `77`) linked to the allowance via **`cnt_grace.HOLD_OID = allo.OID`**.
-
-3. **Active Allowance Validity Periods (`CC_DEV_ALLO`)**:
-   - Evaluated dynamically via **`DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE))`**.
-
----
-
-## ⚡ Universal Master Production HANA SQL Query
-
-```sql
+sql_safe = """
 SELECT DISTINCT
     a.subscriber                          AS "SUBSCRIBER_ID",
     b.ext_id                              AS "CONTRACT_ID",
@@ -43,7 +29,7 @@ SELECT DISTINCT
             WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4D41494E545F434F4D4D495353494F4E') > 0 THEN 'MAINT_COMMISSION'
             WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '465454485F4241534943') > 0 THEN 'FTTH_BASIC'
             WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '42554646455F465245455F504552494F44') > 0 THEN 'BUFFER_PERIOD'
-            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4155544F5F52454E4557414C5F464C4147') > 0 THEN 'AUTO_RENEWAL_FLAG'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '415544F5F52454E4557414C5F464C4147') > 0 THEN 'AUTO_RENEWAL_FLAG'
             ELSE 'OTHER_ALLOWANCE'
         END
     )                                     AS "ALLOWANCE_TYPE",
@@ -65,7 +51,7 @@ SELECT DISTINCT
         END
     )                                     AS "SUB_PRODUCT",
 
-    -- 🌟 Safe Coalesce Strategy for Grace Free Period Across All Contracts
+    -- 🌟 Safe Coalesce Strategy: Checks ZEL_ALLW_MIG column, then COUN_KEY = 20 counter, then validity date countdown
     COALESCE(
         NULLIF(CAST(z.GRACE_FREE_DAYS AS INT), 0),
         NULLIF(CAST(cnt_grace.VALUE AS INT), 0),
@@ -109,24 +95,21 @@ LEFT JOIN (
     GROUP BY CON_ID
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(evt.CON_ID, '0')
-
--- Filter by Contract ID or Subscriber ID:
 WHERE c.coun_key = 4
-  AND (b.ext_id = '00000000000000061742' OR sub_caco.ext_id = '00000000000000061742')
+  AND a.subscriber IN ('0011111151', '0000000493', '0260422215', '0000005000')
+ORDER BY a.subscriber, b.ext_id, "ALLOWANCE_OID"
+LIMIT 20;
+"""
 
-ORDER BY "ALLOWANCE_OID";
-```
+try:
+    cur.execute(sql_safe)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    print(" | ".join(f"{c:<16}" for c in cols))
+    print("-" * 170)
+    for r in rows:
+        print(" | ".join(f"{str(x):<16}" for x in r))
+except Exception as e:
+    print(f"Error: {e}")
 
----
-
-## 📁 Repository File Index
-
-* [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`test_universal_grace_period_fix.py`](./test_universal_grace_period_fix.py) - Test script running safe universal grace period query across all contract types.
-
----
-
-## ✒️ Author
-**Pranav Chandore**  
-*SAP CC & HANA SDA Architecture Team*  
-Repository: [PranavChandore/CC-SDA-SAP-HANA](https://github.com/PranavChandore/CC-SDA-SAP-HANA)
+con.close()
