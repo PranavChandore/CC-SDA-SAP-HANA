@@ -1,37 +1,22 @@
-# 📖 Master Universal Adaptive SAP CC & HANA SDA Query Documentation
+import sys
+import time
+from collections import Counter
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-> **System Target**: SAP Convergent Charging 2023 / SAP HANA DEV Database (`10.4.4.125:30041`)  
-> **Schema**: `SAPHANADB`  
-> **Repository**: `CC-SDA-SAP-HANA`  
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Summary
+print("================================================================================")
+print(" RUNNING BULK VALIDATION OF MASTER QUERY ACROSS 1,000 CONTRACT ACCOUNTS")
+print("================================================================================")
 
-This document provides the **Master Universal Adaptive SAP HANA SQL Query** and its **1,000-Contract Bulk Audit Results**.
-
-We audited the Master Query across **1,000 Provider Contracts** in the DEV HANA database (`10.4.4.125:30041`). The query completed in **4.43 seconds** with 100% data integrity, processing **3,115 total allowance records** across **734 customer subscriber accounts**.
-
----
-
-## 📊 1,000-Account Bulk Validation Summary
-
-| Metric | Result | Status |
-| :--- | :--- | :--- |
-| **Contracts Tested** | **1,000 Contracts** | `[OK] 100% Success` |
-| **Distinct Subscribers** | **734 Accounts** | `[OK] Verified` |
-| **Total Allowance Records** | **3,115 Records** | `[OK] Processed` |
-| **Query Execution Time** | **4.43 Seconds** | `[OK] High Performance` |
-| **Grace Free Period Records** | **374 Allowances** | `[OK] Parsed` |
-| **Base Plan Products** | **1,208 Records** | `[OK] Parsed` |
-| **VAS Products** | **121 Records** | `[OK] Parsed` |
-| **IPTV / Parental Control** | **474 Records** | `[OK] Parsed` |
-
----
-
-## ⚡ Master Universal Adaptive HANA SQL Query
-
-```sql
+bulk_sql = """
 SELECT DISTINCT
     sa.SUBSCRIBER                         AS "SUBSCRIBER_ID",
     caco.EXT_ID                           AS "CONTRACT_ID",
@@ -105,10 +90,76 @@ LEFT JOIN (
     GROUP BY CON_ID
 ) evt 
     ON LTRIM(caco.EXT_ID, '0') = LTRIM(evt.CON_ID, '0')
-
--- Filter for 1,000 contracts or any specific contract / subscriber list:
 WHERE caco.EXT_ID IN (
     SELECT EXT_ID FROM SAPHANADB.CC_DEV_CACO LIMIT 1000
 )
 ORDER BY sa.SUBSCRIBER, caco.EXT_ID, allo.OID;
-```
+"""
+
+t0 = time.time()
+try:
+    cur.execute(bulk_sql)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    t1 = time.time()
+    
+    print(f"[OK] Query executed successfully in {t1 - t0:.2f} seconds!")
+    print(f"Total Allowance Records Retrieved: {len(rows)}")
+    
+    # Analyze statistics
+    subscribers = set()
+    contracts = set()
+    allowance_types = Counter()
+    products = Counter()
+    sub_products = Counter()
+    grace_records = []
+    
+    for r in rows:
+        subscribers.add(r[0])
+        contracts.add(r[1])
+        allowance_types[r[5]] += 1
+        products[r[6]] += 1
+        sub_products[r[7]] += 1
+        if r[5] == 'GRACE_FREE_PERIOD':
+            grace_records.append({
+                'sub': r[0],
+                'contract': r[1],
+                'total_days': r[8],
+                'remaining_days': r[9],
+                'start': str(r[10]),
+                'end': str(r[11]),
+                'amount': r[13],
+                'counter_4': r[14]
+            })
+            
+    print("\n--------------------------------------------------------------------------------")
+    print(" SUMMARY METRICS FOR 1,000 CONTRACTS")
+    print("--------------------------------------------------------------------------------")
+    print(f"Distinct Subscriber Accounts: {len(subscribers)}")
+    print(f"Distinct Contracts Analyzed:  {len(contracts)}")
+    print(f"Total Allowance Instances:    {len(rows)}")
+    
+    print("\nAllowance Type Breakdown:")
+    for k, v in allowance_types.most_common():
+        print(f"  - {k:<20}: {v} records")
+
+    print("\nProduct Breakdown:")
+    for k, v in products.most_common():
+        print(f"  - {k:<20}: {v} records")
+
+    print("\nSub Product Breakdown:")
+    for k, v in sub_products.most_common():
+        print(f"  - {k:<20}: {v} records")
+        
+    print(f"\nTotal Grace Free Period Allowances Found: {len(grace_records)}")
+    if grace_records:
+        print("\nSample Grace Period Allowances:")
+        print("SUBSCRIBER_ID | CONTRACT_ID | TOTAL_DAYS | REMAINING_DAYS | START_DATE | END_DATE | AMOUNT | COUNTER_4")
+        print("-" * 120)
+        for g in grace_records[:10]:
+            print(f"{g['sub']} | {g['contract']} | {g['total_days']} | {g['remaining_days']} | {g['start']} | {g['end']} | {g['amount']} | {g['counter_4']}")
+
+except Exception as e:
+    print(f"Error during bulk query execution: {e}")
+
+con.close()
