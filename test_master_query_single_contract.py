@@ -1,34 +1,20 @@
-# 🚀 SAP CC Smart Data Access (SDA) & Grace Period HANA SQL Architecture
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-[![Database](https://img.shields.io/badge/Database-SAP%20HANA%202.0-0088CC?style=flat-square&logo=sap)](https://www.sap.com)
-[![SAP CC](https://img.shields.io/badge/SAP%20CC-2023-005B94?style=flat-square)](https://www.sap.com)
-[![SDA](https://img.shields.io/badge/SDA-Smart%20Data%20Access-success?style=flat-square)](https://www.sap.com)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Overview
+print("================================================================================")
+print(" RUNNING MASTER QUERY FOR PARTICULAR CONTRACT ID: 00000000000000061742")
+print("================================================================================")
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Universal Master SAP HANA SQL Query** for extracting **Grace Free Period Values**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
-
----
-
-## 🔬 Architectural Summary: How Grace Period is Stored
-
-1. **Migrated / Staging Contracts (`ZEL_ALLW_MIG`)**:
-   - The grace period integer is stored directly as a raw database column **`z.GRACE_FREE_DAYS`** (e.g. `3`, `8`, `78`).
-
-2. **Active SAP CC Allowance Counters (`CC_DEV_COUNTER`)**:
-   - Stored under **`cnt_grace.COUN_KEY = 20`** (e.g. **`77`**) linked to the allowance via **`cnt_grace.HOLD_OID = allo.OID`**.
-
-3. **Active Allowance Validity Periods (`CC_DEV_ALLO`)**:
-   - Validity dates are stored in **`allo.START_DATE`** and **`allo.END_DATE`**. Evaluated dynamically via **`DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE))`**.
-
----
-
-## ⚡ Master Production HANA SQL Query
-
-```sql
+sql_single_contract = """
 SELECT DISTINCT
     a.subscriber                          AS "SUBSCRIBER_ID",
     b.ext_id                              AS "CONTRACT_ID",
@@ -65,7 +51,7 @@ SELECT DISTINCT
         END
     )                                     AS "SUB_PRODUCT",
 
-    -- 🌟 3-Tier Coalesce Strategy for Grace Free Period Across All Contracts
+    -- 🌟 Safe Coalesce Strategy for Grace Free Period Across All Contracts
     COALESCE(
         NULLIF(CAST(z.GRACE_FREE_DAYS AS INT), 0),
         NULLIF(CAST(cnt_grace.VALUE AS INT), 0),
@@ -110,51 +96,26 @@ LEFT JOIN (
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(evt.CON_ID, '0')
 
--- Filter by Contract ID or Subscriber ID:
 WHERE c.coun_key = 4
+
+  -- 🌟 FILTER FOR PARTICULAR CONTRACT ID HERE:
   AND (
       LTRIM(b.ext_id, '0') = LTRIM('00000000000000061742', '0')
    OR LTRIM(sub_caco.ext_id, '0') = LTRIM('00000000000000061742', '0')
   )
 
 ORDER BY "ALLOWANCE_OID";
-```
+"""
 
----
+try:
+    cur.execute(sql_single_contract)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    print(" | ".join(cols))
+    print("-" * 160)
+    for r in rows:
+        print(" | ".join(str(x) if x is not None else "null" for x in r))
+except Exception as e:
+    print(f"Error: {e}")
 
-## 📊 Verified Test Data Sets
-
-### 🟢 1. Contracts WITH a Grace Period (`GRACE_FREE_PERIOD > 0`)
-
-| SUBSCRIBER_ID | CONTRACT_ID | ALLOWANCE_OID | ALLOWANCE_TYPE | **GRACE_FREE_PERIOD** |
-| :--- | :--- | :--- | :--- | :--- |
-| **`0011111151`** | **`00000000000000061742`** | `395104028` | `GRACE_FREE_PERIOD` | **`87` Days (`77` on Sept 4)** |
-| **`0000000900`** | **`00000000000000000678`** | `392362134` | `GRACE_FREE_PERIOD` | **`16` Days** |
-| **`0000000901`** | **`00000000000000000679`** | `390632136` | `GRACE_FREE_PERIOD` | **`16` Days** |
-| **`0000000902`** | **`00000000000000000680`** | `391862042` | `GRACE_FREE_PERIOD` | **`16` Days** |
-| **`0260422215`** | **`00000000000000028169`** | `44574704` | `GRACE_FREE_PERIOD` | **`3` Days** |
-| **`0000005000`** | **`00000000000000049216`** | `75530327` | `GRACE_FREE_PERIOD` | **`8` Days** |
-
-### 🔴 2. Contracts WITHOUT a Grace Period (`GRACE_FREE_PERIOD = 0`)
-
-| SUBSCRIBER_ID | CONTRACT_ID | ALLOWANCE_OID | ALLOWANCE_TYPE | **GRACE_FREE_PERIOD** |
-| :--- | :--- | :--- | :--- | :--- |
-| **`EF009`** | **`00000000000000000177`** | `71765016` | `OTHER_ALLOWANCE` | **`0` Days** |
-| **`0000000004`** | **`00000000000000000540`** | `3301010` | `OTHER_ALLOWANCE` | **`0` Days** |
-| **`0000000293`** | **`00000000000000000541`** | `3305002` | `OTHER_ALLOWANCE` | **`0` Days** |
-| **`0000000455`** | **`00000000000000000543`** | `3307002` | `OTHER_ALLOWANCE` | **`0` Days** |
-
----
-
-## 📁 Repository File Index
-
-* [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`find_contracts_with_and_without_grace.py`](./find_contracts_with_and_without_grace.py) - Script listing real verified contracts WITH and WITHOUT grace periods.
-* [`test_master_query_single_contract.py`](./test_master_query_single_contract.py) - Master production query test for single contract ID.
-
----
-
-## ✒️ Author
-**Pranav Chandore**  
-*SAP CC & HANA SDA Architecture Team*  
-Repository: [PranavChandore/CC-SDA-SAP-HANA](https://github.com/PranavChandore/CC-SDA-SAP-HANA)
+con.close()
