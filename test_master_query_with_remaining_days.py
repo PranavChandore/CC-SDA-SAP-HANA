@@ -1,26 +1,20 @@
-# 📖 Master Universal Adaptive SAP CC & HANA SDA Query Documentation
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-> **System Target**: SAP Convergent Charging 2023 / SAP HANA DEV Database (`10.4.4.125:30041`)  
-> **Schema**: `SAPHANADB`  
-> **Repository**: `CC-SDA-SAP-HANA`  
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Summary
+print("================================================================================")
+print(" MASTER QUERY WITH BOTH TOTAL GRACE DAYS & REMAINING GRACE DAYS")
+print("================================================================================")
 
-This document provides the **Master Universal Adaptive SAP HANA SQL Query** that handles **all customer, contract, counter, and allowance scenarios** without requiring any query code changes.
-
-### 💡 Discovery: Why the SAP CC GUI shows `77` Days for Contract `00000000000000061742`
-1. **Total Grace Period (`START_DATE` to `END_DATE`)**: `2026-08-20` to `2026-11-20` = **92 Total Days**.
-2. **Remaining Grace Period (`CURRENT_DATE` to `END_DATE`)**: The SAP CC Core Tool GUI displays **dynamic remaining grace period days**. On September 4, 2026, `DAYS_BETWEEN('2026-09-04', '2026-11-20')` = **EXACTLY 77 DAYS**!
-
-The Master Query below includes **both** `GRACE_TOTAL_DAYS` (92 days) and `GRACE_REMAINING_DAYS` (77 days) dynamically.
-
----
-
-## ⚡ Master Universal Adaptive HANA SQL Query (With Remaining Grace Days = 77)
-
-```sql
+master_sql_both = """
 SELECT DISTINCT
     sa.SUBSCRIBER                         AS "SUBSCRIBER_ID",
     caco.EXT_ID                           AS "CONTRACT_ID",
@@ -36,17 +30,6 @@ SELECT DISTINCT
         ELSE 'OTHER_ALLOWANCE'
     END                                   AS "ALLOWANCE_TYPE",
     CASE 
-        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '424153455F504C414E') > 0 THEN 'BASE_PLAN'
-        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '564153') > 0 THEN 'VAS'
-        ELSE 'NA'
-    END                                   AS "PRODUCT",
-    CASE 
-        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '504152454E54414C5F434F4E54524F4C') > 0 THEN 'PARENTAL_CONTROL'
-        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '49505456') > 0 THEN 'IPTV'
-        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4241534943') > 0 THEN 'BASIC'
-        ELSE 'NA'
-    END                                   AS "SUB_PRODUCT",
-    CASE 
         WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 
          AND YEAR(allo.END_DATE) < 2099
         THEN DAYS_BETWEEN(CAST(allo.START_DATE AS DATE), CAST(allo.END_DATE AS DATE))
@@ -57,7 +40,13 @@ SELECT DISTINCT
          AND YEAR(allo.END_DATE) < 2099
         THEN GREATEST(0, DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE)))
         ELSE 0
-    END                                   AS "GRACE_REMAINING_DAYS",
+    END                                   AS "GRACE_REMAINING_DAYS_TODAY",
+    CASE 
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 
+         AND YEAR(allo.END_DATE) < 2099
+        THEN GREATEST(0, DAYS_BETWEEN(CAST('2026-09-04' AS DATE), CAST(allo.END_DATE AS DATE)))
+        ELSE 0
+    END                                   AS "GRACE_REMAINING_DAYS_SEP4",
     allo.START_DATE                       AS "VALIDITY_START_DATE",
     allo.END_DATE                         AS "VALIDITY_END_DATE",
     COALESCE(
@@ -94,9 +83,19 @@ LEFT JOIN (
     GROUP BY CON_ID
 ) evt 
     ON LTRIM(caco.EXT_ID, '0') = LTRIM(evt.CON_ID, '0')
-
--- Filter for Contract 00000000000000061742 or list of contracts:
 WHERE caco.EXT_ID = '00000000000000061742'
-
 ORDER BY sa.SUBSCRIBER, caco.EXT_ID, allo.OID;
-```
+"""
+
+try:
+    cur.execute(master_sql_both)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    print(" | ".join(cols))
+    print("-" * 160)
+    for r in rows:
+        print(" | ".join(str(x) if x is not None else "null" for x in r))
+except Exception as e:
+    print(f"Error: {e}")
+
+con.close()
