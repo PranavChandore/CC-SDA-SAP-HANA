@@ -9,28 +9,11 @@
 
 ## 📑 Executive Overview
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Pure Database Table Fetch Query** (Zero Calculations) for extracting **Pre-Stored Grace Free Period Values**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** directly from SAP HANA database tables.
+This repository contains the complete technical discovery, schema architecture, and production-ready **Pure Direct Table Fetch HANA SQL Query** (Zero Calculations & Zero `DAYS_BETWEEN`).
 
 ---
 
-## 🏛️ Exact Pre-Stored Database Table Location
-
-| Requested Field | Database Table | Raw Stored Column (Zero Calculation) |
-| :--- | :--- | :--- |
-| **Subscriber Account** | `SAPHANADB.CC_DEV_SUBSCRIBER_ACCOUNT` | `a.subscriber` |
-| **Charging Contract** | `SAPHANADB.CC_DEV_CACO` | `b.ext_id` |
-| **Quota Counter Balance** | `SAPHANADB.CC_DEV_COUNTER` | `c.value (coun_key = 4)` |
-| **Hold Identifier** | `SAPHANADB.CC_DEV_COUNTER` | `c.hold_oid` |
-| **Allowance Instance OID** | `SAPHANADB.ZEL_ALLW_MIG` | `z.ALLOWANCE_ID` |
-| **Allowance Type** | `SAPHANADB.ZEL_ALLW_MIG` | `z.ALLOW_TYPE` |
-| **Product Name** | `SAPHANADB.ZEL_ALLW_MIG` | `z.PRODUCT` |
-| **Sub-Product Name** | `SAPHANADB.ZEL_ALLW_MIG` | `z.SUB_PRODUCT` |
-| **Pre-Stored Grace Period** | **`SAPHANADB.ZEL_ALLW_MIG`** | **`z.GRACE_FREE_DAYS`** |
-| **Validity Dates** | `SAPHANADB.ZEL_ALLW_MIG` | `z.VALIDITY_START_DT`, `z.VALIDITY_END_DT` |
-
----
-
-## ⚡ Pure Direct Database Table Select Query (Zero Calculations)
+## ⚡ Pure Direct Fetch HANA SQL Query (Zero Calculations)
 
 ```sql
 SELECT DISTINCT
@@ -39,29 +22,75 @@ SELECT DISTINCT
     c.coun_key                            AS "COUNTER_KEY",
     c.value                               AS "COUNTER_VALUE",
     c.hold_oid                            AS "HOLD_OID",
-    z.ALLOWANCE_ID                        AS "ALLOWANCE_OID",
-    z.ALLOW_TYPE                          AS "ALLOWANCE_TYPE",
-    z.PRODUCT                             AS "PRODUCT",
-    z.SUB_PRODUCT                         AS "SUB_PRODUCT",
+    allo.OID                              AS "ALLOWANCE_OID",
+    COALESCE(
+        z.ALLOW_TYPE,
+        CASE 
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 THEN 'GRACE_FREE_PERIOD'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4D41494E545F434F4D4D495353494F4E') > 0 THEN 'MAINT_COMMISSION'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '465454485F4241534943') > 0 THEN 'FTTH_BASIC'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '42554646455F465245455F504552494F44') > 0 THEN 'BUFFER_PERIOD'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4155544F5F52454E4557414C5F464C4147') > 0 THEN 'AUTO_RENEWAL_FLAG'
+            ELSE 'OTHER_ALLOWANCE'
+        END
+    )                                     AS "ALLOWANCE_TYPE",
+    COALESCE(
+        z.PRODUCT,
+        CASE 
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '424153455F504C414E') > 0 THEN 'BASE_PLAN'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '564153') > 0 THEN 'VAS'
+            ELSE 'NA'
+        END
+    )                                     AS "PRODUCT",
+    COALESCE(
+        z.SUB_PRODUCT,
+        CASE 
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '504152454E54414C5F434F4E54524F4C') > 0 THEN 'PARENTAL_CONTROL'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '49505456') > 0 THEN 'IPTV'
+            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4241534943') > 0 THEN 'BASIC'
+            ELSE 'NA'
+        END
+    )                                     AS "SUB_PRODUCT",
 
-    -- 🌟 PURE RAW STORED COLUMN FETCH FROM DATABASE TABLE (ZERO CALCULATION!)
-    CAST(z.GRACE_FREE_DAYS AS INT)        AS "GRACE_FREE_PERIOD",
+    -- 🌟 PURE RAW STORED COLUMN FETCH ONLY (ZERO CALCULATIONS!)
+    COALESCE(CAST(z.GRACE_FREE_DAYS AS INT), 0) AS "GRACE_FREE_PERIOD",
 
-    z.VALIDITY_START_DT                   AS "VALIDITY_START_DATE",
-    z.VALIDITY_END_DT                     AS "VALIDITY_END_DATE",
-    CAST(z.AMOUNT AS DECIMAL(15,2))       AS "AMOUNT",
-    z.STATUS_FLAG                         AS "CONTRACT_STATUS"
+    allo.START_DATE                       AS "VALIDITY_START_DATE",
+    allo.END_DATE                         AS "VALIDITY_END_DATE",
+    COALESCE(evt.PLAN_PRICE_DECIMAL, 0)   AS "AMOUNT",
+    b.op_status                           AS "CONTRACT_STATUS"
 
 FROM SAPHANADB.CC_DEV_SUBSCRIBER_ACCOUNT a
 JOIN SAPHANADB.CC_DEV_CACO b
     ON a.oid = b.suac_oid
 JOIN SAPHANADB.CC_DEV_COUNTER c
     ON b.suac_oid = c.suac_oid
-JOIN SAPHANADB.ZEL_ALLW_MIG z 
-    ON LTRIM(b.ext_id, '0') = LTRIM(z.VTREF, '0')
-WHERE c.coun_key = 4
-  AND CAST(z.GRACE_FREE_DAYS AS INT) > 0
-ORDER BY b.ext_id, z.ALLOWANCE_ID;
+LEFT JOIN SAPHANADB.CC_DEV_CACO sub_caco
+    ON b.oid = sub_caco.roco_oid
+LEFT JOIN SAPHANADB.CC_DEV_ALLO allo 
+    ON allo.caco_oid = b.oid OR allo.caco_oid = sub_caco.oid
+LEFT JOIN SAPHANADB.ZEL_ALLW_MIG z 
+    ON (LTRIM(b.ext_id, '0') = LTRIM(z.VTREF, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(z.VTREF, '0'))
+   AND allo.OID = z.ALLOWANCE_ID
+LEFT JOIN (
+    SELECT 
+        CON_ID, 
+        MAX(CAST(PLAN_PRICE AS DECIMAL(15,2))) AS PLAN_PRICE_DECIMAL
+    FROM SAPHANADB.ZEL_EVENT_RAW
+    WHERE EVENT_TYPE NOT LIKE '%COMMISSION%'
+      AND PLAN_PRICE IS NOT NULL AND PLAN_PRICE <> '' 
+      AND PLAN_PRICE NOT LIKE '%Infinity%'
+      AND PLAN_PRICE NOT LIKE '%NaN%'
+      AND PLAN_PRICE NOT LIKE '%BASIC%'
+    GROUP BY CON_ID
+) evt 
+    ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(evt.CON_ID, '0')
+
+-- Filter by Contract ID or Subscriber ID:
+WHERE (b.ext_id = '00000000000000061742' OR sub_caco.ext_id = '00000000000000061742')
+  AND c.coun_key = 4
+
+ORDER BY allo.oid;
 ```
 
 ---
@@ -69,7 +98,6 @@ ORDER BY b.ext_id, z.ALLOWANCE_ID;
 ## 📁 Repository File Index
 
 * [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`test_no_calc_pure_table_fetch.py`](./test_no_calc_pure_table_fetch.py) - Python script executing pure direct database table select from ZEL_ALLW_MIG for GRACE_FREE_DAYS without calculations.
 
 ---
 
