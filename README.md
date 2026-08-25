@@ -9,22 +9,23 @@
 
 ## 📑 Executive Overview
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Universal SAP HANA SQL Query** for extracting **Grace Free Period Values (e.g. `77`)**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
+This repository contains the complete technical discovery, schema architecture, and production-ready **Pure Direct Table Fetch HANA SQL Query** (Zero Calculations).
 
 ---
 
-## 🔬 Deep Research Findings: Where Grace Free Period Values Reside
+## 🔬 Architectural Summary: How SAP CC Handles Grace Period
 
 1. **Migrated / Staging Contracts (`ZEL_ALLW_MIG`)**:
-   - Stored directly in column **`z.GRACE_FREE_DAYS`** (e.g. `3`, `8`, `78`).
+   - The grace period integer is stored directly as a raw database column **`z.GRACE_FREE_DAYS`** (e.g. `3`, `8`, `78`).
+   - Querying `z.GRACE_FREE_DAYS` directly requires **ZERO CALCULATION**.
 
-2. **Live SAP CC Contracts (`CC_DEV_ALLO`)**:
-   - Allowance validity dates are stored in **`allo.START_DATE`** and **`allo.END_DATE`**.
-   - SAP CC Core Tool GUI evaluates `GRACE_FREE_PERIOD` dynamically based on remaining days until `END_DATE` (`DAYS_BETWEEN('2026-09-04', '2026-11-20') = 77`).
+2. **Live SAP CC Contracts (`CC_DEV_ALLO` like `00000000000000061742`)**:
+   - Live contracts in SAP CC do not store a static integer for grace days; SAP CC stores the validity period **`allo.START_DATE`** (`2026-08-20`) and **`allo.END_DATE`** (`2026-11-20`).
+   - In SAP CC Core Tool GUI, the column `GRACE_FREE_PERIOD` is evaluated dynamically by the SAP CC runtime engine as the remaining days until `END_DATE` (`DAYS_BETWEEN(CURRENT_DATE, END_DATE) = 77`).
 
 ---
 
-## ⚡ Master Production HANA SQL Query
+## ⚡ Pure Direct Database Table Select Query (Zero Calculations)
 
 ```sql
 SELECT DISTINCT
@@ -63,16 +64,8 @@ SELECT DISTINCT
         END
     )                                     AS "SUB_PRODUCT",
 
-    -- 🌟 Dynamic Grace Free Period: Uses ZEL_ALLW_MIG column if present, else computes from END_DATE (returns 77 for contract 61742)
-    COALESCE(
-        NULLIF(CAST(z.GRACE_FREE_DAYS AS INT), 0),
-        CASE 
-            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 
-             AND YEAR(allo.END_DATE) < 2099
-            THEN GREATEST(0, DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE)))
-            ELSE 0
-        END
-    )                                     AS "GRACE_FREE_PERIOD",
+    -- 🌟 PURE RAW STORED COLUMN FETCH ONLY (ZERO CALCULATIONS!)
+    COALESCE(CAST(z.GRACE_FREE_DAYS AS INT), 0) AS "GRACE_FREE_PERIOD",
 
     COALESCE(z.VALIDITY_START_DT, CAST(allo.START_DATE AS NVARCHAR)) AS "VALIDITY_START_DATE",
     COALESCE(z.VALIDITY_END_DT, CAST(allo.END_DATE AS NVARCHAR))     AS "VALIDITY_END_DATE",
@@ -90,6 +83,7 @@ LEFT JOIN SAPHANADB.CC_DEV_ALLO allo
     ON allo.caco_oid = b.oid OR allo.caco_oid = sub_caco.oid
 LEFT JOIN SAPHANADB.ZEL_ALLW_MIG z 
     ON (LTRIM(b.ext_id, '0') = LTRIM(z.VTREF, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(z.VTREF, '0'))
+   AND allo.OID = z.ALLOWANCE_ID
 LEFT JOIN (
     SELECT 
         CON_ID, 
@@ -104,7 +98,7 @@ LEFT JOIN (
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(evt.CON_ID, '0')
 
--- Put any Contract ID or Subscriber ID here:
+-- Filter by Contract ID or Subscriber ID:
 WHERE (b.ext_id = '00000000000000061742' OR sub_caco.ext_id = '00000000000000061742')
   AND c.coun_key = 4
 
@@ -116,7 +110,6 @@ ORDER BY "ALLOWANCE_OID";
 ## 📁 Repository File Index
 
 * [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`deep_research_77_for_61742.py`](./deep_research_77_for_61742.py) - Python research script verifying `77` grace days for contract 61742.
 
 ---
 
