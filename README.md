@@ -9,24 +9,27 @@
 
 ## 📑 Executive Overview
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Pure Stored Database HANA SQL Query** for extracting **Grace Free Period Values**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
+This repository contains the complete technical discovery, schema architecture, and production-ready **Universal Master SAP HANA SQL Query** for extracting **Grace Free Period Values**, **Allowance Amounts (e.g. `921971833`)**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
 
 ---
 
-## 🔬 Architectural Summary: Pure Stored Database Grace Period Values
+## 🔬 Architectural Discovery: Allowance Counter Mapping (`CC_DEV_COUNTER`)
 
-1. **Migrated / Staging Contracts (`ZEL_ALLW_MIG`)**:
-   - Stored directly in raw database column **`z.GRACE_FREE_DAYS`** (e.g. `3`, `8`, `78`).
+Each Allowance Plan in SAP CC Core Tool GUI (e.g., Allowance `4064002`) maintains its counters inside **`SAPHANADB.CC_DEV_COUNTER`** linked via **`HOLD_OID = ALLO.OID`**:
 
-2. **Active Rated SAP CC Allowance Counters (`CC_DEV_COUNTER`)**:
-   - Stored under **`cnt_grace.COUN_KEY = 20`** (e.g. **`77`** for contract `61742`) linked to allowance via **`cnt_grace.HOLD_OID = allo.OID`**.
-
-3. **Unrated / Expired Allowance Instances**:
-   - If an allowance has no counter 20 balance and no migration row (e.g. Contract `682`), the stored value in the database is **`0`**.
+| Counter Name in SAP CC GUI | `COUN_KEY` in `CC_DEV_COUNTER` | Sample Value (`Allowance 4064002`) |
+| :--- | :--- | :--- |
+| **`Amount`** | **`COUN_KEY = 4`** | **`921971833`** |
+| **`STATUS_FLAG`** | **`COUN_KEY = 5`** | **`0`** |
+| **`RENEWAL_START_DATE`** | **`COUN_KEY = 6`** | **`0`** |
+| **`AUTO_RENEWAL_FLAG`** | **`COUN_KEY = 7`** | **`0`** |
+| **`GRACE_FREE_PERIOD`** | **`COUN_KEY = 8` / `20`** | **`0` / `77`** |
+| **`GRACE_PERIOD`** | **`COUN_KEY = 9`** | **`0`** |
+| **`COMMITMENT_FULFILLED`** | **`COUN_KEY = 10`** | **`0`** |
 
 ---
 
-## ⚡ Pure Stored Database SQL Query (Zero Date Calculations)
+## ⚡ Master Production HANA SQL Query (Exact Match for SAP CC GUI)
 
 ```sql
 SELECT DISTINCT
@@ -74,7 +77,9 @@ SELECT DISTINCT
 
     COALESCE(z.VALIDITY_START_DT, CAST(allo.START_DATE AS NVARCHAR)) AS "VALIDITY_START_DATE",
     COALESCE(z.VALIDITY_END_DT, CAST(allo.END_DATE AS NVARCHAR))     AS "VALIDITY_END_DATE",
-    COALESCE(evt.PLAN_PRICE_DECIMAL, 0)   AS "AMOUNT",
+
+    -- 🌟 ALLOWANCE COUNTER AMOUNT (EXACT MATCH FOR GUI SCREENSHOT: 921971833)
+    COALESCE(CAST(cnt_amt.VALUE AS DECIMAL(15,2)), evt.PLAN_PRICE_DECIMAL, 0) AS "AMOUNT",
     b.op_status                           AS "CONTRACT_STATUS"
 
 FROM SAPHANADB.CC_DEV_SUBSCRIBER_ACCOUNT a
@@ -86,6 +91,8 @@ LEFT JOIN SAPHANADB.CC_DEV_CACO sub_caco
     ON b.oid = sub_caco.roco_oid
 LEFT JOIN SAPHANADB.CC_DEV_ALLO allo 
     ON allo.caco_oid = b.oid OR allo.caco_oid = sub_caco.oid
+LEFT JOIN SAPHANADB.CC_DEV_COUNTER cnt_amt
+    ON cnt_amt.HOLD_OID = allo.OID AND cnt_amt.COUN_KEY = 4
 LEFT JOIN SAPHANADB.CC_DEV_COUNTER cnt_grace 
     ON cnt_grace.HOLD_OID = allo.OID AND cnt_grace.COUN_KEY = 20
 LEFT JOIN SAPHANADB.ZEL_ALLW_MIG z 
@@ -107,10 +114,10 @@ LEFT JOIN (
 
 WHERE c.coun_key = 4
 
-  -- 🌟 ENTER YOUR TARGET CONTRACT ID HERE:
+  -- 🌟 ENTER TARGET CONTRACT ID HERE:
   AND (
-      LTRIM(b.ext_id, '0') = LTRIM('00000000000000061742', '0')
-   OR LTRIM(sub_caco.ext_id, '0') = LTRIM('00000000000000061742', '0')
+      LTRIM(b.ext_id, '0') = LTRIM('00000000000000000697', '0')
+   OR LTRIM(sub_caco.ext_id, '0') = LTRIM('00000000000000000697', '0')
   )
 
 ORDER BY "ALLOWANCE_OID";
@@ -118,20 +125,18 @@ ORDER BY "ALLOWANCE_OID";
 
 ---
 
-## 📊 Benchmark Test Results (Pure Stored Values)
+## 📊 Exact Match Verification Result (`Contract 00000000000000000697`)
 
-| CONTRACT_ID | ALLOWANCE_OID | ALLOWANCE_TYPE | **GRACE_FREE_PERIOD** | VALIDITY_START_DATE | VALIDITY_END_DATE |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`00000000000000000682`** | `390752371` | `GRACE_FREE_PERIOD` | **`0`** | `2026-06-10 17:25:49` | `2026-09-10 17:25:49` |
-| **`00000000000000049260`** | `239339236` | `GRACE_FREE_PERIOD` | **`3`** | `2022-12-17 18:58:49` | `9999-12-31 00:00:00` |
-| **`00000000000000061742`** | `395104028` | `GRACE_FREE_PERIOD` | **`77`** | `2026-08-20 15:39:52` | `2026-11-20 15:39:52` |
+| SUBSCRIBER_ID | CONTRACT_ID | ALLOWANCE_OID | ALLOWANCE_TYPE | **AMOUNT** | **GRACE_FREE_PERIOD** | **CONTRACT_STATUS** |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **`0000000911`** | **`00000000000000000697`** | **`4064002`** | `OTHER_ALLOWANCE` | **`921971833`** | **`0`** | **`0`** |
 
 ---
 
 ## 📁 Repository File Index
 
 * [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`test_pure_stored_query_all_three.py`](./test_pure_stored_query_all_three.py) - Pure stored query test for contracts 61742, 49260, and 682.
+* [`test_contract_697_amount_fix.py`](./test_contract_697_amount_fix.py) - Script verifying Allowance Counter Amount 921971833 for Contract 697.
 
 ---
 
