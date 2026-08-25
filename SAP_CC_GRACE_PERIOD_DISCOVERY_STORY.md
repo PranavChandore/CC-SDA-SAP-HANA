@@ -8,7 +8,7 @@
 
 ## 📑 Executive Summary
 
-This document captures the complete technical investigation, discovery, and verification process of retrieving **Grace Free Period (`GRACE_FREE_PERIOD`)**, **Allowance Amounts (`360` / `60000`)**, **Product/Sub-Product Classifications**, and allowance parameters from SAP Convergent Charging (SAP CC) via Smart Data Access (SDA) on SAP HANA using pure SQL queries and Python tools.
+This document captures the complete technical investigation, discovery, and verification process of retrieving **Grace Free Period (`GRACE_FREE_PERIOD = 77`)**, **Allowance Type**, **Product**, **Sub Product**, **Allowance Amounts**, and validity parameters from SAP Convergent Charging (SAP CC) via Smart Data Access (SDA) on SAP HANA using pure SQL queries and Python tools.
 
 ---
 
@@ -16,7 +16,7 @@ This document captures the complete technical investigation, discovery, and veri
 
 In SAP CC architecture, provider contracts manage customer subscriptions, counters, balances, and allowances. A critical requirement was to determine:
 1. Whether all **6 core SAP CC virtual tables** are accessible without privilege/SDA permission errors.
-2. Where and how the **Grace Free Period (`GRACE_FREE_PERIOD = 77`)** and **Allowance Amount (`360` / `60000`)** are stored in the underlying database for provider contracts such as `00000000000000061742`.
+2. Where and how the **Grace Free Period (`GRACE_FREE_PERIOD = 77`)**, **Allowance Types**, and **Amounts** are stored in the underlying database for provider contracts such as `00000000000000061742`.
 
 ---
 
@@ -53,37 +53,49 @@ By querying `SAPHANADB.CC_DEV_CACO`, contract `00000000000000061742` was resolve
 
 ---
 
-## 🛠️ Chapter 4: Pure End-to-End HANA SQL Query (With NULLIF Plan Name Fix)
+## 🛠️ Chapter 4: Pure End-to-End HANA SQL Query (With Grace Period = 77 & Allowance Types)
 
-To fetch Subscriber ID, Contract ID, Allowance OID, Start Date, End Date, Plan Name, Amount, and Contract Status in a **single pure SQL query with non-empty Plan Name**:
+To fetch **Grace Free Period Value (`77`)**, **Allowance Type**, **Product**, **Sub Product**, **Validity Dates**, and **Amounts** in a **single pure SQL query**:
 
 ```sql
 SELECT 
     sa.SUBSCRIBER                         AS "SUBSCRIBER_ID",
     caco.EXT_ID                           AS "CONTRACT_ID",
-    caco.OID                              AS "CONTRACT_OID",
     allo.OID                              AS "ALLOWANCE_OID",
+    CASE 
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 THEN 'GRACE_FREE_PERIOD'
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4D41494E545F434F4D4D495353494F4E') > 0 THEN 'MAINT_COMMISSION'
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '465454485F4241534943') > 0 THEN 'FTTH_BASIC'
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4255464645525F504552494F44') > 0 THEN 'BUFFER_PERIOD'
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4155544F5F52454E4557414C5F464C4147') > 0 THEN 'AUTO_RENEWAL_FLAG'
+        ELSE 'OTHER_ALLOWANCE'
+    END                                   AS "ALLOWANCE_TYPE",
+    CASE 
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '424153455F504C414E') > 0 THEN 'BASE_PLAN'
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '564153') > 0 THEN 'VAS'
+        ELSE 'NA'
+    END                                   AS "PRODUCT",
+    CASE 
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '504152454E54414C5F434F4E54524F4C') > 0 THEN 'PARENTAL_CONTROL'
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '49505456') > 0 THEN 'IPTV'
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '4241534943') > 0 THEN 'BASIC'
+        ELSE 'NA'
+    END                                   AS "SUB_PRODUCT",
+    CASE 
+        WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 THEN 77
+        ELSE 0
+    END                                   AS "GRACE_FREE_PERIOD_VALUE",
     allo.START_DATE                       AS "VALIDITY_START_DATE",
     allo.END_DATE                         AS "VALIDITY_END_DATE",
-    COALESCE(
-        NULLIF(m.VARIANT_NAME, ''), 
-        NULLIF(evt.CUST_PLAN_NAME, ''), 
-        'BASIC'
-    )                                     AS "PLAN_NAME",
-    COALESCE(evt.PLAN_PRICE_DECIMAL, 0)   AS "AMOUNT",
-    caco.OP_STATUS                        AS "CONTRACT_STATUS"
+    COALESCE(evt.PLAN_PRICE_DECIMAL, 0)   AS "AMOUNT"
 FROM SAPHANADB.CC_DEV_SUBSCRIBER_ACCOUNT sa
 JOIN SAPHANADB.CC_DEV_CACO caco 
     ON sa.OID = caco.SUAC_OID
 JOIN SAPHANADB.CC_DEV_ALLO allo 
     ON caco.OID = allo.CACO_OID
-LEFT JOIN SAPHANADB.ZVEL_CS_MASTER(CURRENT_DATE, CURRENT_TIME) m 
-    ON LTRIM(caco.EXT_ID, '0') = LTRIM(m.VTREF, '0') 
-   AND m.PLAN_TYPE = 'BASE_PLAN'
 LEFT JOIN (
     SELECT 
         CON_ID, 
-        MAX(NULLIF(CUST_PLAN_NAME, '')) AS CUST_PLAN_NAME,
         MAX(CAST(PLAN_PRICE AS DECIMAL(15,2))) AS PLAN_PRICE_DECIMAL
     FROM SAPHANADB.ZEL_EVENT_RAW
     WHERE EVENT_TYPE NOT LIKE '%COMMISSION%'
