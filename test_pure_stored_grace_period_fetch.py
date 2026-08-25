@@ -1,35 +1,20 @@
-# 🚀 SAP CC Smart Data Access (SDA) & Grace Period HANA SQL Architecture
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-[![Database](https://img.shields.io/badge/Database-SAP%20HANA%202.0-0088CC?style=flat-square&logo=sap)](https://www.sap.com)
-[![SAP CC](https://img.shields.io/badge/SAP%20CC-2023-005B94?style=flat-square)](https://www.sap.com)
-[![SDA](https://img.shields.io/badge/SDA-Smart%20Data%20Access-success?style=flat-square)](https://www.sap.com)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Overview
+print("================================================================================")
+print(" PURE STORED FETCH QUERY (JOINING SUAC, CACO, COUNTER, ALLO, ZEL_ALLW_MIG)")
+print("================================================================================")
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Pure Fetch SAP HANA SQL Query** (Zero Hardcoding & Zero Calculations) aligned directly with your target database schema (`SUAC`, `CACO`, `COUNTER`, `ALLO`, `ZEL_ALLW_MIG`).
-
----
-
-## 🏛️ Direct Database Table Relational Architecture
-
-As documented in SAP Convergent Charging (SAP CC 2023) database specifications:
-
-| Table Name | Entity Name | Database Function & Dynamic Join Rule |
-| :--- | :--- | :--- |
-| `SUAC` (`CC_DEV_SUBSCRIBER_ACCOUNT`) | **Subscriber Account** | Top-level entity holding customer billing master data (`a.oid`). |
-| `CACO` (`CC_DEV_CACO`) | **Charging Contract** | Provider contract container (`b.oid`). Joined via `a.oid = b.suac_oid`. |
-| `COUNTER` (`CC_DEV_COUNTER`) | **Counter Data** | High-speed table storing numeric balances and quotas (`c.coun_key = 4`, `c.value`). Joined via `b.suac_oid = c.suac_oid`. |
-| `ALLO` (`CC_DEV_ALLO`) | **Allowance Data** | Stores active allowance instances (`allo.caco_oid = b.oid OR allo.caco_oid = sub_caco.oid`). |
-| `ZEL_ALLW_MIG` | **Allowance Master/MIG** | Stores raw allowance types, products, sub-products, and stored grace days (`z.GRACE_FREE_DAYS`). |
-
----
-
-## ⚡ Aligned Pure Fetch HANA SQL Query (Zero Hardcoding & Zero Calculations)
-
-```sql
+sql_pure_stored = """
 SELECT DISTINCT
     a.subscriber                          AS "SUBSCRIBER_ID",
     b.ext_id                              AS "CONTRACT_ID",
@@ -66,7 +51,7 @@ SELECT DISTINCT
         END
     )                                     AS "SUB_PRODUCT",
 
-    -- 🌟 Pure Raw Stored Grace Period Column from Table (Zero Calculation!)
+    -- 🌟 Pure Raw Stored Grace Period Column from Database Table (Zero Calculation!)
     COALESCE(CAST(z.GRACE_FREE_DAYS AS INT), 0) AS "GRACE_FREE_PERIOD",
 
     allo.START_DATE                       AS "VALIDITY_START_DATE",
@@ -99,25 +84,21 @@ LEFT JOIN (
     GROUP BY CON_ID
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0')
-
--- Filter by Subscriber / Customer ID:
 WHERE a.subscriber = '0000073467'
   AND c.coun_key = 4
   AND b.oid = b.roco_oid
-
 ORDER BY allo.oid;
-```
+"""
 
----
+try:
+    cur.execute(sql_pure_stored)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    print(" | ".join(cols))
+    print("-" * 160)
+    for r in rows:
+        print(" | ".join(str(x) if x is not None else "null" for x in r))
+except Exception as e:
+    print(f"Error: {e}")
 
-## 📁 Repository File Index
-
-* [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`test_pure_stored_grace_period_fetch.py`](./test_pure_stored_grace_period_fetch.py) - Python script testing pure stored database fetch joining SUAC, CACO, COUNTER, ALLO, and ZEL_ALLW_MIG.
-
----
-
-## ✒️ Author
-**Pranav Chandore**  
-*SAP CC & HANA SDA Architecture Team*  
-Repository: [PranavChandore/CC-SDA-SAP-HANA](https://github.com/PranavChandore/CC-SDA-SAP-HANA)
+con.close()
