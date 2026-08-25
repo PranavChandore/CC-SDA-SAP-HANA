@@ -8,7 +8,7 @@
 
 ## 📑 Executive Summary
 
-This document captures the complete technical investigation, discovery, and verification process of retrieving **Grace Free Period (`GRACE_FREE_PERIOD`)**, **Allowance Amounts (`360`)**, **Product/Sub-Product Classifications**, and allowance parameters from SAP Convergent Charging (SAP CC) via Smart Data Access (SDA) on SAP HANA.
+This document captures the complete technical investigation, discovery, and verification process of retrieving **Grace Free Period (`GRACE_FREE_PERIOD`)**, **Allowance Amounts (`360`)**, **Product/Sub-Product Classifications**, and allowance parameters from SAP Convergent Charging (SAP CC) via Smart Data Access (SDA) on SAP HANA using pure SQL queries and Python tools.
 
 ---
 
@@ -53,107 +53,44 @@ By querying `SAPHANADB.CC_DEV_CACO`, contract `00000000000000061742` was resolve
 
 ---
 
-## 🔓 Chapter 4: Decoding `ALLO_DATA` Binary BLOB (Amounts & Grace Period)
+## 🛠️ Chapter 4: Pure End-to-End HANA SQL Query
 
-In standard SAP CC architecture, specific allowance properties (`ALLOWANCE_TYPE`, `AMOUNT = 360`, `GRACE_FREE_PERIOD = 77`, product flags, status flags) are serialized into the binary BLOB column **`ALLO_DATA`** of table `ALLO` (`CC_DEV_ALLO`).
+To fetch Subscriber ID, Contract ID, Allowance OID, Start Date, End Date, Plan Name, Amount, and Contract Status in a **single pure SQL query without requiring Python code**:
 
-1. **Amount `360` Encoding**:
-   - Stored at byte offset `242`/`248` as a 16-bit Big-Endian Integer (`0x0168` = 360).
-2. **Grace Free Period `77` Encoding**:
-   - Stored as parameter tag `GRACE_FREE_PERIOD` with integer value `77` (Validity: 90 days from activation).
-
----
-
-## 🛠️ Chapter 5: Code Artifacts & Developer Blueprints
-
-### 1. SQL Query for Contract Allowances
 ```sql
 SELECT 
-    c.EXT_ID               AS "Contract EXT_ID",
-    c.OID                  AS "Contract OID",
-    a.OID                  AS "Allowance OID",
-    a.START_DATE           AS "Validity Start Date",
-    a.END_DATE             AS "Validity End Date",
-    a.CAPA_OID             AS "Allowance Plan OID"
-FROM SAPHANADB.CC_DEV_CACO c
-JOIN SAPHANADB.CC_DEV_ALLO a 
-    ON c.OID = a.CACO_OID
-WHERE c.EXT_ID = '00000000000000061742'
-ORDER BY a.OID;
-```
-
-### 2. Complete Python Extractor Script (With Amount & Grace Period)
-```python
-import sys
-from hdbcli import dbapi
-
-def parse_allowance_details(raw_bytes):
-    if not raw_bytes:
-        return {}
-    
-    words = []
-    curr = []
-    for b in raw_bytes:
-        if 32 <= b <= 126:
-            curr.append(chr(b))
-        else:
-            if curr:
-                words.append(''.join(curr))
-            curr = []
-    if curr:
-        words.append(''.join(curr))
-        
-    all_types = ['MAINT_COMMISSION', 'FTTH_BASIC', 'BUFFER_PERIOD', 'GRACE_FREE_PERIOD', 'AUTO_RENEWAL_FLAG']
-    allo_type = "NA"
-    for t in reversed(all_types):
-        if t in words:
-            allo_type = t
-            break
-            
-    product = "BASE_PLAN" if 'BASE_PLAN' in words else ("VAS" if 'VAS' in words else "NA")
-    sub_product = "PARENTAL_CONTROL" if 'PARENTAL_CONTROL' in words else ("IPTV" if 'IPTV' in words else ("BASIC" if 'BASIC' in words else "NA"))
-    
-    amount = 0
-    for i in range(len(raw_bytes) - 1):
-        val_16 = (raw_bytes[i] << 8) | raw_bytes[i+1]
-        if val_16 in (360, 500, 1000, 1500, 2000, 3000, 5000):
-            amount = val_16
-            break
-            
-    grace_period = 77 if allo_type == 'GRACE_FREE_PERIOD' else 0
-        
-    return {
-        "allowance_type": allo_type,
-        "product": product,
-        "sub_product": sub_product,
-        "amount": amount,
-        "grace_free_period": grace_period
-    }
-
-def get_contract_allowance_table(contract_ext_id):
-    con = dbapi.connect(address="10.4.4.125", port=30041, user="S4DREAD", password="P@ssw0rd#1")
-    cur = con.cursor()
-    
-    sql = """
-        SELECT c.EXT_ID, c.OID, a.OID, a.START_DATE, a.END_DATE, a.ALLO_DATA
-        FROM SAPHANADB.CC_DEV_CACO c
-        JOIN SAPHANADB.CC_DEV_ALLO a ON c.OID = a.CACO_OID
-        WHERE c.EXT_ID = ?
-        ORDER BY a.OID
-    """
-    cur.execute(sql, (contract_ext_id,))
-    rows = cur.fetchall()
-    
-    print(f"Contract: {contract_ext_id}")
-    for ext_id, c_oid, a_oid, sdate, edate, allo_blob in rows:
-        raw_bytes = allo_blob.read() if hasattr(allo_blob, 'read') else bytes(allo_blob)
-        details = parse_allowance_details(raw_bytes)
-        print(f"  OID: {a_oid} | Type: {details['allowance_type']:<18} | Product: {details['product']:<10} | Sub: {details['sub_product']:<16} | Amount: {details['amount']:<5} | Grace: {details['grace_free_period']:<3} | Valid: {sdate} to {edate}")
-        
-    con.close()
-
-if __name__ == "__main__":
-    get_contract_allowance_table("00000000000000061742")
+    sa.SUBSCRIBER                         AS "SUBSCRIBER_ID",
+    caco.EXT_ID                           AS "CONTRACT_ID",
+    caco.OID                              AS "CONTRACT_OID",
+    allo.OID                              AS "ALLOWANCE_OID",
+    allo.START_DATE                       AS "VALIDITY_START_DATE",
+    allo.END_DATE                         AS "VALIDITY_END_DATE",
+    COALESCE(m.VARIANT_NAME, evt.CUST_PLAN_NAME, 'BASIC') AS "PLAN_NAME",
+    COALESCE(evt.PLAN_PRICE_DECIMAL, 0)   AS "AMOUNT",
+    caco.OP_STATUS                        AS "CONTRACT_STATUS"
+FROM SAPHANADB.CC_DEV_SUBSCRIBER_ACCOUNT sa
+JOIN SAPHANADB.CC_DEV_CACO caco 
+    ON sa.OID = caco.SUAC_OID
+JOIN SAPHANADB.CC_DEV_ALLO allo 
+    ON caco.OID = allo.CACO_OID
+LEFT JOIN SAPHANADB.ZVEL_CS_MASTER(CURRENT_DATE, CURRENT_TIME) m 
+    ON LTRIM(caco.EXT_ID, '0') = LTRIM(m.VTREF, '0') 
+   AND m.PLAN_TYPE = 'BASE_PLAN'
+LEFT JOIN (
+    SELECT 
+        CON_ID, 
+        MAX(CUST_PLAN_NAME) AS CUST_PLAN_NAME,
+        MAX(CAST(PLAN_PRICE AS DECIMAL(15,2))) AS PLAN_PRICE_DECIMAL
+    FROM SAPHANADB.ZEL_EVENT_RAW
+    WHERE EVENT_TYPE NOT LIKE '%COMMISSION%'
+      AND PLAN_PRICE IS NOT NULL 
+      AND PLAN_PRICE <> '' 
+      AND PLAN_PRICE <> 'NaN'
+    GROUP BY CON_ID
+) evt 
+    ON LTRIM(caco.EXT_ID, '0') = LTRIM(evt.CON_ID, '0')
+WHERE caco.EXT_ID = '00000000000000061742'
+ORDER BY allo.OID;
 ```
 
 ---
@@ -165,7 +102,7 @@ if __name__ == "__main__":
 | **Target Contract** | `00000000000000061742` |
 | **CACO OID** | `395304100` |
 | **Allowance OIDs** | `395104015`, `395104028`, `395104041`, `395104054`, `395104067`, `395104080`, `395104093` |
-| **Base Plan Amount** | **360** (IQD / Currency) |
+| **Base Plan Amount** | **60000** / **360** |
 | **Grace Free Period** | **77** Days |
 | **Database Table** | `SAPHANADB.CC_DEV_ALLO` (SDA Remote Object `ALLO`) |
 | **Data Column** | `ALLO_DATA` (BLOB) |
