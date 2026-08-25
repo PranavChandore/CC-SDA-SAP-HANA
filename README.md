@@ -9,24 +9,24 @@
 
 ## 📑 Executive Overview
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **Universal Master SAP HANA SQL Query** for extracting **Grace Free Period Values**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
+This repository contains the complete technical discovery, schema architecture, and production-ready **Pure Stored Database HANA SQL Query** for extracting **Grace Free Period Values**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
 
 ---
 
-## 🔬 Architectural Summary: How Grace Period is Stored
+## 🔬 Architectural Summary: Pure Stored Database Grace Period Values
 
 1. **Migrated / Staging Contracts (`ZEL_ALLW_MIG`)**:
-   - The grace period integer is stored directly as a raw database column **`z.GRACE_FREE_DAYS`** (e.g. `3`, `8`, `78`).
+   - Stored directly in raw database column **`z.GRACE_FREE_DAYS`** (e.g. `3`, `8`, `78`).
 
-2. **Active SAP CC Allowance Counters (`CC_DEV_COUNTER`)**:
-   - Stored under **`cnt_grace.COUN_KEY = 20`** (e.g. **`77`**) linked to the allowance via **`cnt_grace.HOLD_OID = allo.OID`**.
+2. **Active Rated SAP CC Allowance Counters (`CC_DEV_COUNTER`)**:
+   - Stored under **`cnt_grace.COUN_KEY = 20`** (e.g. **`77`** for contract `61742`) linked to allowance via **`cnt_grace.HOLD_OID = allo.OID`**.
 
-3. **Active Allowance Validity Periods (`CC_DEV_ALLO`)**:
-   - Validity dates are stored in **`allo.START_DATE`** and **`allo.END_DATE`**. Evaluated dynamically via **`DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE))`**.
+3. **Unrated / Expired Allowance Instances**:
+   - If an allowance has no counter 20 balance and no migration row (e.g. Contract `682`), the stored value in the database is **`0`**.
 
 ---
 
-## ⚡ Master Production HANA SQL Query
+## ⚡ Pure Stored Database SQL Query (Zero Date Calculations)
 
 ```sql
 SELECT DISTINCT
@@ -65,16 +65,11 @@ SELECT DISTINCT
         END
     )                                     AS "SUB_PRODUCT",
 
-    -- 🌟 3-Tier Coalesce Strategy for Grace Free Period Across All Contracts
+    -- 🌟 PURE RAW STORED VALUES ONLY (ZERO DATE CALCULATIONS!)
     COALESCE(
         NULLIF(CAST(z.GRACE_FREE_DAYS AS INT), 0),
         NULLIF(CAST(cnt_grace.VALUE AS INT), 0),
-        CASE 
-            WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 
-             AND YEAR(allo.END_DATE) < 2099
-            THEN GREATEST(0, DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE)))
-            ELSE 0
-        END
+        0
     )                                     AS "GRACE_FREE_PERIOD",
 
     COALESCE(z.VALIDITY_START_DT, CAST(allo.START_DATE AS NVARCHAR)) AS "VALIDITY_START_DATE",
@@ -92,7 +87,7 @@ LEFT JOIN SAPHANADB.CC_DEV_CACO sub_caco
 LEFT JOIN SAPHANADB.CC_DEV_ALLO allo 
     ON allo.caco_oid = b.oid OR allo.caco_oid = sub_caco.oid
 LEFT JOIN SAPHANADB.CC_DEV_COUNTER cnt_grace 
-    ON cnt_grace.HOLD_OID = allo.OID AND cnt_grace.COUN_KEY = 20 AND cnt_grace.VALUE BETWEEN 1 AND 365
+    ON cnt_grace.HOLD_OID = allo.OID AND cnt_grace.COUN_KEY = 20
 LEFT JOIN SAPHANADB.ZEL_ALLW_MIG z 
     ON (LTRIM(b.ext_id, '0') = LTRIM(z.VTREF, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(z.VTREF, '0'))
    AND allo.OID = z.ALLOWANCE_ID
@@ -110,8 +105,9 @@ LEFT JOIN (
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(evt.CON_ID, '0')
 
--- Filter by Contract ID or Subscriber ID:
 WHERE c.coun_key = 4
+
+  -- 🌟 ENTER YOUR TARGET CONTRACT ID HERE:
   AND (
       LTRIM(b.ext_id, '0') = LTRIM('00000000000000061742', '0')
    OR LTRIM(sub_caco.ext_id, '0') = LTRIM('00000000000000061742', '0')
@@ -122,35 +118,20 @@ ORDER BY "ALLOWANCE_OID";
 
 ---
 
-## 📊 Verified Test Data Sets
+## 📊 Benchmark Test Results (Pure Stored Values)
 
-### 🟢 1. Contracts WITH a Grace Period (`GRACE_FREE_PERIOD > 0`)
-
-| SUBSCRIBER_ID | CONTRACT_ID | ALLOWANCE_OID | ALLOWANCE_TYPE | **GRACE_FREE_PERIOD** |
-| :--- | :--- | :--- | :--- | :--- |
-| **`0011111151`** | **`00000000000000061742`** | `395104028` | `GRACE_FREE_PERIOD` | **`87` Days (`77` on Sept 4)** |
-| **`0000000900`** | **`00000000000000000678`** | `392362134` | `GRACE_FREE_PERIOD` | **`16` Days** |
-| **`0000000901`** | **`00000000000000000679`** | `390632136` | `GRACE_FREE_PERIOD` | **`16` Days** |
-| **`0000000902`** | **`00000000000000000680`** | `391862042` | `GRACE_FREE_PERIOD` | **`16` Days** |
-| **`0260422215`** | **`00000000000000028169`** | `44574704` | `GRACE_FREE_PERIOD` | **`3` Days** |
-| **`0000005000`** | **`00000000000000049216`** | `75530327` | `GRACE_FREE_PERIOD` | **`8` Days** |
-
-### 🔴 2. Contracts WITHOUT a Grace Period (`GRACE_FREE_PERIOD = 0`)
-
-| SUBSCRIBER_ID | CONTRACT_ID | ALLOWANCE_OID | ALLOWANCE_TYPE | **GRACE_FREE_PERIOD** |
-| :--- | :--- | :--- | :--- | :--- |
-| **`EF009`** | **`00000000000000000177`** | `71765016` | `OTHER_ALLOWANCE` | **`0` Days** |
-| **`0000000004`** | **`00000000000000000540`** | `3301010` | `OTHER_ALLOWANCE` | **`0` Days** |
-| **`0000000293`** | **`00000000000000000541`** | `3305002` | `OTHER_ALLOWANCE` | **`0` Days** |
-| **`0000000455`** | **`00000000000000000543`** | `3307002` | `OTHER_ALLOWANCE` | **`0` Days** |
+| CONTRACT_ID | ALLOWANCE_OID | ALLOWANCE_TYPE | **GRACE_FREE_PERIOD** | VALIDITY_START_DATE | VALIDITY_END_DATE |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`00000000000000000682`** | `390752371` | `GRACE_FREE_PERIOD` | **`0`** | `2026-06-10 17:25:49` | `2026-09-10 17:25:49` |
+| **`00000000000000049260`** | `239339236` | `GRACE_FREE_PERIOD` | **`3`** | `2022-12-17 18:58:49` | `9999-12-31 00:00:00` |
+| **`00000000000000061742`** | `395104028` | `GRACE_FREE_PERIOD` | **`77`** | `2026-08-20 15:39:52` | `2026-11-20 15:39:52` |
 
 ---
 
 ## 📁 Repository File Index
 
 * [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`find_contracts_with_and_without_grace.py`](./find_contracts_with_and_without_grace.py) - Script listing real verified contracts WITH and WITHOUT grace periods.
-* [`test_master_query_single_contract.py`](./test_master_query_single_contract.py) - Master production query test for single contract ID.
+* [`test_pure_stored_query_all_three.py`](./test_pure_stored_query_all_three.py) - Pure stored query test for contracts 61742, 49260, and 682.
 
 ---
 
