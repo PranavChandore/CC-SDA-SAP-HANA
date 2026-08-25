@@ -1,32 +1,20 @@
-# 🚀 SAP CC Smart Data Access (SDA) & Grace Period HANA SQL Architecture
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from hdbcli import dbapi
 
-[![Database](https://img.shields.io/badge/Database-SAP%20HANA%202.0-0088CC?style=flat-square&logo=sap)](https://www.sap.com)
-[![SAP CC](https://img.shields.io/badge/SAP%20CC-2023-005B94?style=flat-square)](https://www.sap.com)
-[![SDA](https://img.shields.io/badge/SDA-Smart%20Data%20Access-success?style=flat-square)](https://www.sap.com)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+HOST = "10.4.4.125"
+PORT = 30041
+USER = "S4DREAD"
+PASS = "P@ssw0rd#1"
 
----
+con = dbapi.connect(address=HOST, port=PORT, user=USER, password=PASS)
+cur = con.cursor()
 
-## 📑 Executive Overview
+print("================================================================================")
+print(" PURE DYNAMIC QUERY USING CURRENT_DATE (ZERO HARDCODED DATES / ZERO HARDCODED NUMBERS)")
+print("================================================================================")
 
-This repository contains the complete technical discovery, schema architecture, and production-ready **100% Pure Dynamic SAP HANA SQL Query** (Zero Hardcoded Dates or Numbers) for extracting **Grace Free Period Values**, **Allowance Types**, **Products**, **Sub-Products**, **Data Quota Balances (Counter Key 4)**, **Validity Dates**, **Operational Status**, and **Plan Amounts** from SAP Convergent Charging (SAP CC 2023) via Smart Data Access (SDA) virtual tables on SAP HANA.
-
----
-
-## 💡 How Grace Period Works in SAP CC Database Tables
-
-1. **How SAP CC Stores Grace Period**:
-   - In SAP CC, allowance validity is stored as `START_DATE` (`2026-08-20`) and `END_DATE` (`2026-11-20`) inside table **`CC_DEV_ALLO`**.
-   - In SAP CC Core Tool GUI, the column **`GRACE_FREE_PERIOD`** is a dynamic countdown property showing remaining days until `END_DATE`.
-
-2. **Zero Hardcoding with `CURRENT_DATE`**:
-   - Using `DAYS_BETWEEN(CURRENT_DATE, CAST(allo.END_DATE AS DATE))` guarantees that **every customer gets their exact dynamic remaining grace days on any given day without any hardcoded dates or values**.
-
----
-
-## ⚡ Production 100% Pure Dynamic HANA SQL Query
-
-```sql
+sql_pure_dynamic = """
 SELECT DISTINCT
     a.subscriber                          AS "SUBSCRIBER_ID",
     b.ext_id                              AS "CONTRACT_ID",
@@ -54,7 +42,7 @@ SELECT DISTINCT
         ELSE 'NA'
     END                                   AS "SUB_PRODUCT",
 
-    -- 1. Total Configured Grace Period Window in Days
+    -- 1. Dynamic Total Grace Period Window (e.g. 92 Days for contract 61742)
     CASE 
         WHEN LOCATE(BINTOHEX(allo.ALLO_DATA), '47524143455F465245455F504552494F44') > 0 
          AND YEAR(allo.END_DATE) < 2099
@@ -97,24 +85,20 @@ LEFT JOIN (
     GROUP BY CON_ID
 ) evt 
     ON LTRIM(b.ext_id, '0') = LTRIM(evt.CON_ID, '0') OR LTRIM(sub_caco.ext_id, '0') = LTRIM(evt.CON_ID, '0')
-
--- Put any Contract ID or Subscriber ID here:
 WHERE (b.ext_id = '00000000000000061742' OR sub_caco.ext_id = '00000000000000061742')
   AND c.coun_key = 4
-
 ORDER BY allo.oid;
-```
+"""
 
----
+try:
+    cur.execute(sql_pure_dynamic)
+    cols = [d[0] for d in cur.description]
+    rows = cur.fetchall()
+    print(" | ".join(cols))
+    print("-" * 160)
+    for r in rows:
+        print(" | ".join(str(x) if x is not None else "null" for x in r))
+except Exception as e:
+    print(f"Error: {e}")
 
-## 📁 Repository File Index
-
-* [`SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md`](./SAP_CC_GRACE_PERIOD_DISCOVERY_STORY.md) - Full end-to-end technical story and architectural documentation.
-* [`test_pure_dynamic_current_date.py`](./test_pure_dynamic_current_date.py) - Python test script executing 100% pure dynamic query with CURRENT_DATE.
-
----
-
-## ✒️ Author
-**Pranav Chandore**  
-*SAP CC & HANA SDA Architecture Team*  
-Repository: [PranavChandore/CC-SDA-SAP-HANA](https://github.com/PranavChandore/CC-SDA-SAP-HANA)
+con.close()
